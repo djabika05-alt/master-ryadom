@@ -60,12 +60,17 @@ test('job attachments, private chat, public portfolio, limits and restart persis
  }finally{if(app)await stop(app.child);await rm(dir,{recursive:true,force:true})}
 });
 
-test('S3 metadata and media survive replacement of local disk; private bucket responses are proxied',async()=>{
+test('S3 without conditional PUT preserves versions, rejects conflicts and survives local disk replacement',async()=>{
  const objects=new Map();
  const s3=http.createServer(async(req,res)=>{
-  const key=new URL(req.url,'http://localhost').pathname;const old=objects.get(key);
+  const url=new URL(req.url,'http://localhost'),key=url.pathname;const old=objects.get(key);
+  if(req.method==='GET'&&url.searchParams.get('list-type')==='2'){
+   const prefix=url.searchParams.get('prefix')||'',bucket=key.replace(/\/$/,'')+'/';
+   const keys=[...objects.keys()].filter(k=>k.startsWith(bucket+prefix)).sort().map(k=>k.slice(bucket.length));
+   res.writeHead(200,{'Content-Type':'application/xml'});return res.end('<ListBucketResult><IsTruncated>false</IsTruncated>'+keys.map(k=>'<Contents><Key>'+k+'</Key></Contents>').join('')+'</ListBucketResult>');
+  }
   if(req.method==='PUT'){
-   if((req.headers['if-none-match']==='*'&&old)||(req.headers['if-match']&&req.headers['if-match']!==old?.etag)){res.writeHead(412,{'Content-Type':'application/xml'});return res.end('<Error><Code>PreconditionFailed</Code></Error>')}
+   // Deliberately ignore conditional headers, as Supabase PutObject does.
    const parts=[];for await(const b of req)parts.push(b);const body=Buffer.concat(parts),etag='"'+crypto.createHash('md5').update(body).digest('hex')+'"';objects.set(key,{body,etag});res.writeHead(200,{ETag:etag});return res.end();
   }
   if(req.method==='DELETE'){objects.delete(key);res.writeHead(204);return res.end()}
@@ -82,5 +87,15 @@ test('S3 metadata and media survive replacement of local disk; private bucket re
   await stop(app.child);app=await start({...env,DB_PATH:path.join(dir,'replacement.sqlite')});
   const profile=await (await fetch(app.base+'/api/portfolio?masterId='+user.id)).json();assert.equal(profile.works.length,1);
   const r=await fetch(app.base+'/api/media/'+media.id);assert.equal(r.status,200);assert.deepEqual(Buffer.from(await r.arrayBuffer()),png);
+  const versions=[...objects.keys()].filter(k=>k.includes('/state-journal/')).sort();assert.equal(versions.length,3);
+  assert.equal(JSON.parse(objects.get(versions[0]).body).portfolio.length,0);
+  assert.equal(JSON.parse(objects.get(versions.at(-1)).body).portfolio.length,1);
+  // An overlapping writer cannot make one branch silently disappear.
+  const fork=versions.at(-1).replace(/[a-f0-9-]{36}\.json$/,crypto.randomUUID()+'.json');
+  objects.set(fork,objects.get(versions.at(-1)));
+  const conflicted=await fetch(app.base+'/api/jobs');assert.equal(conflicted.status,400);assert.match((await conflicted.json()).error,/Conflicting application state revisions/);
+  assert.equal(objects.size,5); // original media, three versions and retained fork
+  objects.delete(fork);
+  assert.equal((await fetch(app.base+'/api/portfolio?masterId='+user.id)).status,200);
  }finally{if(app)await stop(app.child);await new Promise(r=>s3.close(r));await rm(dir,{recursive:true,force:true})}
 });

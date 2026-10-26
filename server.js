@@ -31,6 +31,9 @@ const auth=(req,db)=>{const t=(req.headers.authorization||'').replace(/^Bearer /
 const publicJob=(j,db,viewer)=>({id:j.id,title:j.title,category:j.category,description:j.description,city:j.city,budget:j.budget,status:j.status,createdAt:j.createdAt,clientId:viewer?.id===j.clientId?j.clientId:null,masterId:viewer?.id===j.clientId||viewer?.id===j.masterId?j.masterId:null,clientName:db.users.find(u=>u.id===j.clientId)?.name||'Заказчик',offersCount:db.offers.filter(o=>o.jobId===j.id).length,media:db.media.filter(m=>m.attachedTo===j.id&&m.scope==='job').map(publicMedia)});
 const notify=(db,userId,type,job,text)=>{if(!userId)return;db.notifications.push({id:uid(),userId,type,jobId:job?.id||null,text,read:false,createdAt:new Date().toISOString()});if(db.notifications.length>5000)db.notifications.splice(0,db.notifications.length-5000)};
 const port=process.env.PORT||3000;
+// Verify durable state can be read before accepting traffic. A missing credential
+// or unavailable cloud must not produce a healthy-looking, empty local app.
+await read();
 let requestQueue=Promise.resolve();
 http.createServer((req,res)=>{const work=async()=>{try{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Frame-Options','DENY');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
